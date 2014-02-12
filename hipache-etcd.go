@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"os"
 
 	"github.com/coreos/go-etcd/etcd"
 	"github.com/garyburd/redigo/redis"
@@ -11,7 +12,7 @@ import (
 	"github.com/ortoo/hipache-etcd/clients"
 )
 
-const etcdWatchKey = "/services"
+var etcdWatchKey string
 
 func WatchServices(receiver chan *etcd.Response) {
 	client := clients.EtcdClient()
@@ -54,7 +55,7 @@ func setFrontend(frontendKey string, domain string, host string, redisClient red
 	return redisClient.Do("EXEC")
 }
 
-func handleChange(action string, node *etcd.Node, index uint64) {
+func handleChange(action string, node *etcd.Node, index uint64) {	
 	syncedIndex := initializer.SyncedIndex(node.Key)
 
 	// If the synced index is gte our one then just exit
@@ -115,6 +116,12 @@ func HandleServiceChanges(receiver chan *etcd.Response) {
 }
 
 func main() {
+
+	etcdWatchKey = os.Getenv("ETCD_WATCH_KEY")
+	if etcdWatchKey == "" {
+		etcdWatchKey = "/services"
+	}
+
 	initializer.Initialize()
 
 	// Watch the services directory for changes
