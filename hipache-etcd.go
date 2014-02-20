@@ -46,6 +46,11 @@ func setFrontend(frontendKey string, domain string, host string, redisClient red
 	}
 
 	redisClient.Do("MULTI")
+	// Don't want duplicates
+	if host != "" {
+		redisClient.Do("LREM", frontendKey, 0, host)
+	}
+
 	if exists && host != "" {
 		redisClient.Do("RPUSH", frontendKey, host)
 	} else {
@@ -95,6 +100,8 @@ func handleChange(action string, node *etcd.Node, index uint64) {
 		}
 	
 	case "create":
+		fallthrough
+	case "set":
 		var rep interface{} = nil
 
 		// Repeat until we get a non-nil response
@@ -107,7 +114,7 @@ func handleChange(action string, node *etcd.Node, index uint64) {
 			}
 		}
 
-		fmt.Println("Added frontend", domain, host)
+		fmt.Println("Added/updated frontend", domain, host)
 	}
 }
 
