@@ -16,6 +16,10 @@ var etcdWatchKey string
 
 func WatchServices(receiver chan *etcd.Response) {
 	client := clients.EtcdClient()
+
+	// Set the directory
+	client.SetDir(etcdWatchKey, 0)
+
 	for {
 		fmt.Printf("Created etcd watcher: key=%s\n", etcdWatchKey)
 
@@ -91,8 +95,6 @@ func handleChange(action string, node *etcd.Node, index uint64) {
 		}
 	
 	case "create":
-		fallthrough
-	case "set":
 		var rep interface{} = nil
 
 		// Repeat until we get a non-nil response
