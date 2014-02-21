@@ -73,6 +73,8 @@ func handleChange(action string, node *etcd.Node, index uint64) {
 		return
 	}
 
+	fmt.Println("We have a change:", action, node.Key)
+
 	split := strings.Split(node.Key, "/")
 
 	if len(split) < 3 {
@@ -91,6 +93,8 @@ func handleChange(action string, node *etcd.Node, index uint64) {
 	redisClient := clients.RedisClient()
 
 	switch action {
+	case "expire":
+		fallthrough
 	case "delete":
 		if host == "" {
 			redisClient.Do("DEL", frontendKey)
