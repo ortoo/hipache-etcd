@@ -8,7 +8,6 @@ import (
 	"github.com/coreos/go-etcd/etcd"
 	"github.com/garyburd/redigo/redis"
 
-	"github.com/ortoo/hipache-etcd/initializer"
 	"github.com/ortoo/hipache-etcd/clients"
 )
 
@@ -36,95 +35,76 @@ func WatchServices(receiver chan *etcd.Response) {
 	}
 }
 
-func setFrontend(frontendKey string, domain string, host string, redisClient redis.Conn) (reply interface{}, err error) {
-	// Does the frontend already exist
-	redisClient.Do("WATCH", frontendKey)
-	exists, err := redis.Bool(redisClient.Do("EXISTS", frontendKey))
+// On any change we just refresh everything
+func handleChange() {
 
+	// Go and fetch all the services from etcd
+	etcdClient := clients.EtcdClient()
+
+	if etcdClient == nil {
+		fmt.Println("Couldn't connect to etcd")
+		return
+	}
+
+	resp, err := etcdClient.Get(etcdWatchKey, false, true)
 	if err != nil {
-		return nil, err
-	}
-
-	redisClient.Do("MULTI")
-	// Don't want duplicates
-	if host != "" {
-		redisClient.Do("LREM", frontendKey, 0, host)
-	}
-
-	if exists && host != "" {
-		redisClient.Do("RPUSH", frontendKey, host)
-	} else {
-		redisClient.Do("RPUSH", frontendKey, domain)
-
-		if host != "" {
-			redisClient.Do("RPUSH", frontendKey, host)	
-		}
-	}
-
-	return redisClient.Do("EXEC")
-}
-
-func handleChange(action string, node *etcd.Node, index uint64) {	
-	syncedIndex := initializer.SyncedIndex(node.Key)
-
-	// If the synced index is gte our one then just exit
-	if syncedIndex != 0 && (syncedIndex >= index) {
-		fmt.Println("Already synced this change:", action, node.Key)
+		fmt.Println(err)
 		return
 	}
 
-	fmt.Println("We have a change:", action, node.Key)
-
-	split := strings.Split(node.Key, "/")
-
-	if len(split) < 3 {
-		return
-	}
-
-	var host string
-	domain := split[2]
-
-	if len(split) == 4 {
-		host = "http://" + split[3]	
-	}
-
-	frontendKey := "frontend:" + domain
-
+	// Go and fetch all the services in REDIS
 	redisClient := clients.RedisClient()
-
-	switch action {
-	case "expire":
-		fallthrough
-	case "delete":
-		if host == "" {
-			redisClient.Do("DEL", frontendKey)
-		} else {
-			redisClient.Do("LREM", frontendKey, 0, host)
-			fmt.Println("Deleted frontend", domain, host)
-		}
-	
-	case "create":
-		fallthrough
-	case "set":
-		var rep interface{} = nil
-
-		// Repeat until we get a non-nil response
-		for rep := rep; rep == nil; {
-			var err error
-			rep, err = setFrontend(frontendKey, domain, host, redisClient)
-			if err != nil {
-				fmt.Println(err)
-				return
-			}
-		}
-
-		fmt.Println("Added/updated frontend", domain, host)
+	if (redisClient == nil) {
+		fmt.Println("Couldn't connect to redis")
+		return
 	}
+
+	keys, err := redis.Strings(redisClient.Do("KEYS", "frontend:*"))
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	// Now we delete everything in redis and add everything back in from etcd
+	redisClient.Send("MULTI")
+	if len(keys) > 0 {
+		redisClient.Send("DEL", redis.Args{}.AddFlat(keys)...)
+	}
+
+	for _, node := range resp.Node.Nodes {
+		// This first level is a frontend
+		split := strings.Split(node.Key, "/")
+		domain := split[len(split) - 1]
+
+		frontendKey := "frontend:" + domain
+
+		// Belt and braces - delete this key just in case its not already (but it should be)
+		redisClient.Send("DEL", frontendKey)
+		redisClient.Send("RPUSH", frontendKey, domain)
+
+		for _, instNode := range node.Nodes {
+			instsplit := strings.Split(instNode.Key, "/")
+			inst := instsplit[len(instsplit) - 1]
+			host := "http://" + inst
+			redisClient.Send("RPUSH", frontendKey, host)
+		}
+	}
+
+	// Should be everything
+	_, err = redisClient.Do("EXEC")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	fmt.Println("Resynced hipache from etcd")
 }
 
 func HandleServiceChanges(receiver chan *etcd.Response) {
-	for resp := range receiver {
-		go handleChange(resp.Action, resp.Node, resp.EtcdIndex)
+	// Do an initial sync and then listen for any messages on the receiver
+	handleChange()
+	for _ = range receiver {
+		handleChange()
 	}
 }
 
@@ -135,14 +115,8 @@ func main() {
 		etcdWatchKey = "/services"
 	}
 
-	initializer.Initialize()
-
 	// Watch the services directory for changes
 	etcdchan := make(chan *etcd.Response)
 	go WatchServices(etcdchan)
-
-	// Kick off the initial sync
-	go initializer.Sync(etcdWatchKey)
-
 	HandleServiceChanges(etcdchan)
 }
