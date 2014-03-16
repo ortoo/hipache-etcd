@@ -16,6 +16,10 @@ var etcdWatchKey string
 func WatchServices(receiver chan *etcd.Response) {
 	client := clients.EtcdClient()
 
+	if client == nil {
+		fmt.Println("Error connecting to etcd")
+	}
+
 	// Set the directory
 	client.SetDir(etcdWatchKey, 0)
 
@@ -36,15 +40,7 @@ func WatchServices(receiver chan *etcd.Response) {
 }
 
 // On any change we just refresh everything
-func handleChange() {
-
-	// Go and fetch all the services from etcd
-	etcdClient := clients.EtcdClient()
-
-	if etcdClient == nil {
-		fmt.Println("Couldn't connect to etcd")
-		return
-	}
+func handleChange(etcdClient *etcd.Client) {
 
 	resp, err := etcdClient.Get(etcdWatchKey, false, true)
 	if err != nil {
@@ -58,6 +54,7 @@ func handleChange() {
 		fmt.Println("Couldn't connect to redis")
 		return
 	}
+	defer redisClient.Close()
 
 	keys, err := redis.Strings(redisClient.Do("KEYS", "frontend:*"))
 	if err != nil {
@@ -102,9 +99,17 @@ func handleChange() {
 
 func HandleServiceChanges(receiver chan *etcd.Response) {
 	// Do an initial sync and then listen for any messages on the receiver
-	handleChange()
+	// Go and fetch all the services from etcd
+	etcdClient := clients.EtcdClient()
+
+	if etcdClient == nil {
+		fmt.Println("Couldn't connect to etcd")
+		return
+	}
+
+	handleChange(etcdClient)
 	for _ = range receiver {
-		handleChange()
+		handleChange(etcdClient)
 	}
 }
 
